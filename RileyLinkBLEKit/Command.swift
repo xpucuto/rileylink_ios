@@ -22,7 +22,7 @@ enum RileyLinkCommand: UInt8 {
     case setModeRegisters = 10
 }
 
-enum RileyLinkResponseError: UInt8 {
+public enum RileyLinkResponseError: UInt8, Error {
     case rxTimeout          = 0xaa
     case commandInterrupted = 0xbb
     case zeroData           = 0xcc
@@ -150,6 +150,11 @@ struct RegisterSetting {
 }
 
 internal struct UpdateRegister: RespondingCommand {
+    enum Response: UInt8 {
+        case success = 1
+        case invalidRegister = 2
+    }
+
     let register: RegisterSetting
 
     let expectedResponseLength = 1

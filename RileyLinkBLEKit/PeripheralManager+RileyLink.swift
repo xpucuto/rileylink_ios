@@ -6,6 +6,7 @@
 //
 
 import CoreBluetooth
+import os.log
 
 
 protocol CBUUIDRawValue: RawRepresentable {}
@@ -79,6 +80,9 @@ extension CBCentralManager {
         scanForPeripherals(withServices: [RileyLinkServiceUUID.main.cbUUID], options: options)
     }
 }
+
+
+private let log = OSLog(category: "PeripheralManager+RileyLink")
 
 
 extension PeripheralManager {
@@ -214,6 +218,10 @@ extension PeripheralManager {
 
 // MARK: - Lower-level helper operations
 extension PeripheralManager {
+
+    /// - Throws:
+    ///     - PeripheralManagerError
+    ///     - RileyLinkResponseError
     func writeCommand(_ value: Data,
         for characteristic: CBCharacteristic,
         type: CBCharacteristicWriteType = .withResponse,
@@ -225,17 +233,33 @@ extension PeripheralManager {
                 addCondition(.write(characteristic: characteristic))
             }
 
-            if characteristic.isNotifying {
-                addCondition(.valueUpdate(characteristic: characteristic, matching: { value in
-                    // TODO: Look for RileyLinkResponseError. Ignore .commandInterrupted, but match .rxTimeout and .zeroData for quicker error handling?
+            addCondition(.valueUpdate(characteristic: characteristic, matching: { value in
+                guard let value = value else {
+                    return false
+                }
 
-                    guard let value = value, value.count >= minimumLength else {
-                        return false
-                    }
-
+                switch value.count {
+                case 0:
+                    return false
+                case let x where x >= minimumLength:
                     return true
-                }))
-            }
+                default: // count > 0, count < minimumLength
+                    let error = RileyLinkResponseError(rawValue: value[0])
+                    switch error {
+                    case .none:
+                        // We don't recognize the error. Keep listening.
+                        log.error("RileyLink response error unexpected: %{public}@", String(describing: value))
+                        return false
+                    case .commandInterrupted?:
+                        // This is expected in cases where an "Idle" GetPacket command is running
+                        log.debug("RileyLink response error: commandInterrupted: %{public}@", String(describing: value))
+                        return false
+                    case .rxTimeout?, .zeroData?:
+                        log.debug("RileyLink response error: %{public}@: %{public}@", String(describing: error!), String(describing: value))
+                        return true
+                    }
+                }
+            }))
 
             peripheral.writeValue(value, for: characteristic, type: type)
         }
@@ -243,6 +267,13 @@ extension PeripheralManager {
         guard let value = characteristic.value else {
             // TODO: This is an "unknown value" issue, not a timeout
             throw PeripheralManagerError.timeout
+        }
+
+        guard value.count >= minimumLength else {
+            guard let rawError = value.first, let error = RileyLinkResponseError(rawValue: rawError) else {
+                throw PeripheralManagerError.invalidResponse(value)
+            }
+            throw error
         }
 
         return value

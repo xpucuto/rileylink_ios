@@ -60,7 +60,20 @@ public struct CommandSession {
     /// - Throws: PeripheralManagerError
     public func updateRegister(_ address: CC111XRegister, value: UInt8) throws {
         let command = UpdateRegister(address, value: value)
-        _ = try writeCommand(command, timeout: 0)
+        let response = try writeCommand(command, timeout: 0)
+
+        guard let rawResponse = response.first else {
+            throw PeripheralManagerError.invalidResponse(response)
+        }
+
+        switch UpdateRegister.Response(rawValue: rawResponse) {
+        case .none:
+            throw PeripheralManagerError.invalidResponse(response)
+        case .invalidRegister?:
+            throw PeripheralManagerError.invalidInput(String(describing: command.register))
+        case .success?:
+            return
+        }
     }
 
     private static let xtalFrequency = Measurement<UnitFrequency>(value: 24, unit: .megahertz)

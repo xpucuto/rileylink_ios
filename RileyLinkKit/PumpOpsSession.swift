@@ -66,8 +66,7 @@ extension PumpOpsSession {
         if pump.pumpModel == nil || !pump.pumpModel!.hasMySentry {
             // Older pumps have a longer sleep cycle between wakeups, so send an initial burst
             do {
-                // TODO: Verify that it's OK not to listen here
-                try session.send(shortPowerMessage, repeatCount: 255)
+                let _: PumpAckMessageBody = try session.getResponse(to: shortPowerMessage, repeatCount: 255, timeout: .milliseconds(1), retryCount: 0)
             }
             catch { }
         }
