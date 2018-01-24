@@ -683,7 +683,7 @@ extension PumpOpsSession {
 
     /// - Throws:
     ///     - PumpOpsError.peripheralError
-    ///     - PeripheralManagerError
+    ///     - RileyLinkDeviceError
     private func configureRadio(for region: PumpRegion) throws {
         switch region {
         case .worldWide:

@@ -92,7 +92,7 @@ extension PeripheralManager {
         return peripheral.getCharacteristicWithUUID(.timerTick)?.isNotifying ?? false
     }
 
-    func setTimerTickEnabled(_ enabled: Bool, timeout: TimeInterval = expectedMaxBLELatency, completion: ((_ error: PeripheralManagerError?) -> Void)? = nil) {
+    func setTimerTickEnabled(_ enabled: Bool, timeout: TimeInterval = expectedMaxBLELatency, completion: ((_ error: RileyLinkDeviceError?) -> Void)? = nil) {
         perform { (manager) in
             do {
                 guard let characteristic = manager.peripheral.getCharacteristicWithUUID(.timerTick) else {
@@ -102,21 +102,21 @@ extension PeripheralManager {
                 try manager.setNotifyValue(enabled, for: characteristic, timeout: timeout)
                 completion?(nil)
             } catch let error as PeripheralManagerError {
-                completion?(error)
+                completion?(.peripheralManagerError(error))
             } catch {
                 assertionFailure()
             }
         }
     }
 
-    func startIdleListening(idleTimeout: TimeInterval, channel: UInt8, timeout: TimeInterval = expectedMaxBLELatency, completion: @escaping (_ error: PeripheralManagerError?) -> Void) {
+    func startIdleListening(idleTimeout: TimeInterval, channel: UInt8, timeout: TimeInterval = expectedMaxBLELatency, completion: @escaping (_ error: RileyLinkDeviceError?) -> Void) {
         perform { (manager) in
             let command = GetPacket(listenChannel: channel, timeoutMS: UInt32(clamping: Int(idleTimeout.milliseconds)))
 
             do {
                 _ = try manager.writeCommand(command, timeout: timeout, responseType: .none)
                 completion(nil)
-            } catch let error as PeripheralManagerError {
+            } catch let error as RileyLinkDeviceError {
                 completion(error)
             } catch {
                 assertionFailure()
@@ -124,9 +124,9 @@ extension PeripheralManager {
         }
     }
 
-    func setCustomName(_ name: String, timeout: TimeInterval = expectedMaxBLELatency, completion: ((_ error: PeripheralManagerError?) -> Void)? = nil) {
+    func setCustomName(_ name: String, timeout: TimeInterval = expectedMaxBLELatency, completion: ((_ error: RileyLinkDeviceError?) -> Void)? = nil) {
         guard let value = name.data(using: .utf8) else {
-            completion?(PeripheralManagerError.invalidInput(name))
+            completion?(.invalidInput(name))
             return
         }
 
@@ -139,7 +139,7 @@ extension PeripheralManager {
                 try manager.writeValue(value, for: characteristic, type: .withResponse, timeout: timeout)
                 completion?(nil)
             } catch let error as PeripheralManagerError {
-                completion?(error)
+                completion?(.peripheralManagerError(error))
             } catch {
                 assertionFailure()
             }
@@ -156,59 +156,66 @@ extension PeripheralManager {
         case none
     }
 
+    /// - Throws: RileyLinkDeviceError
     func writeCommand(_ command: Command, timeout: TimeInterval, responseType: ResponseType) throws -> Data {
         guard let characteristic = peripheral.getCharacteristicWithUUID(.data) else {
-            throw PeripheralManagerError.unknownCharacteristic
+            throw RileyLinkDeviceError.peripheralManagerError(.unknownCharacteristic)
         }
 
         var value = command.data
 
         // Data commands are encoded with their length as the first byte
         guard value.count <= 220 else {
-            throw PeripheralManagerError.writeSizeLimitExceeded(maxLength: 220)
+            throw RileyLinkDeviceError.writeSizeLimitExceeded(maxLength: 220)
         }
 
         value.insert(UInt8(value.count), at: 0)
 
-        switch (command, responseType) {
-        case (let command as RespondingCommand, .single):
-            return try writeCommand(value,
-                for: characteristic, timeout: timeout, awaitingUpdateWithMinimumLength: command.expectedResponseLength)
-        case (let command as RespondingCommand, .buffered):
-            return try writeCommand(value,
-                for: characteristic,
-                timeout: timeout,
-                awaitingUpdateWithMinimumLength: command.expectedResponseLength,
-                endOfResponseMarker: 0x00
-            )
-        default:
-            try writeValue(value, for: characteristic, type: .withResponse, timeout: timeout)
-            return Data()
+        do {
+            switch (command, responseType) {
+            case (let command as RespondingCommand, .single):
+                return try writeCommand(value,
+                    for: characteristic, timeout: timeout, awaitingUpdateWithMinimumLength: command.expectedResponseLength)
+            case (let command as RespondingCommand, .buffered):
+                return try writeCommand(value,
+                    for: characteristic,
+                    timeout: timeout,
+                    awaitingUpdateWithMinimumLength: command.expectedResponseLength,
+                    endOfResponseMarker: 0x00
+                )
+            default:
+                try writeValue(value, for: characteristic, type: .withResponse, timeout: timeout)
+                return Data()
+            }
+        } catch let error as PeripheralManagerError {
+            throw RileyLinkDeviceError.peripheralManagerError(error)
         }
     }
 
+    /// - Throws: RileyLinkDeviceError
     func readRadioFirmwareVersion(timeout: TimeInterval, responseType: ResponseType) throws -> String {
         let data = try writeCommand(GetVersion(), timeout: timeout, responseType: responseType)
 
         guard let version = String(bytes: data, encoding: .utf8) else {
-            throw PeripheralManagerError.invalidResponse(data)
+            throw RileyLinkDeviceError.invalidResponse(data)
         }
 
         return version
     }
 
+    /// - Throws: RileyLinkDeviceError
     func readBluetoothFirmwareVersion(timeout: TimeInterval) throws -> String {
         guard let characteristic = peripheral.getCharacteristicWithUUID(.firmwareVersion) else {
-            throw PeripheralManagerError.unknownCharacteristic
+            throw RileyLinkDeviceError.peripheralManagerError(.unknownCharacteristic)
         }
 
         guard let data = try readValue(for: characteristic, timeout: timeout) else {
             // TODO: This is an "unknown value" issue, not a timeout
-            throw PeripheralManagerError.timeout
+            throw RileyLinkDeviceError.peripheralManagerError(.timeout)
         }
 
         guard let version = String(bytes: data, encoding: .utf8) else {
-            throw PeripheralManagerError.invalidResponse(data)
+            throw RileyLinkDeviceError.invalidResponse(data)
         }
 
         return version
@@ -266,19 +273,21 @@ extension PeripheralManager {
 
         guard let value = characteristic.value else {
             // TODO: This is an "unknown value" issue, not a timeout
-            throw PeripheralManagerError.timeout
+            throw RileyLinkDeviceError.peripheralManagerError(.timeout)
         }
 
         guard value.count >= minimumLength else {
-            guard let rawError = value.first, let error = RileyLinkResponseError(rawValue: rawError) else {
-                throw PeripheralManagerError.invalidResponse(value)
+            if value.first == RileyLinkResponseError.rxTimeout.rawValue {
+                throw RileyLinkDeviceError.responseTimeout
             }
-            throw error
+
+            throw RileyLinkDeviceError.invalidResponse(value)
         }
 
         return value
     }
 
+    /// - Throws: PeripheralManagerError
     func writeCommand(_ value: Data,
         for characteristic: CBCharacteristic,
         type: CBCharacteristicWriteType = .withResponse,

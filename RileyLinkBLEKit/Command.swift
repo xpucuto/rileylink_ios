@@ -22,7 +22,7 @@ enum RileyLinkCommand: UInt8 {
     case setModeRegisters = 10
 }
 
-public enum RileyLinkResponseError: UInt8, Error {
+enum RileyLinkResponseError: UInt8 {
     case rxTimeout          = 0xaa
     case commandInterrupted = 0xbb
     case zeroData           = 0xcc
